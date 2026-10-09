@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tribase: Faster Vector Search with Lossless Pruning</title>
+<style>
+:root{--bg:#f6f8fa;--card:#fff;--ink:#37475a;--mut:#7a8794;--line:#dfe5ea;--blue:#7f9fbf;--blue2:#e6eef6;--sage:#9bb8a5;--sage2:#e8f1ec;--sand:#dccfb2;--sand2:#f5f0e4;--rose:#d3a5a5;--rose2:#f6eaea;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI",Helvetica,Arial,sans-serif;overflow:hidden}
+*{box-sizing:border-box}
+.s{display:none;position:absolute;inset:0 0 44px 0;padding:4vh 6vw;overflow-y:auto;flex-direction:column;justify-content:center;max-width:1100px;margin:auto}
+.s.on{display:flex;animation:f .35s}
+@keyframes f{from{opacity:0}to{opacity:1}}
+.tag{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--blue);margin-bottom:6px;font-weight:600}
+h1{font-size:clamp(30px,5vw,52px);margin:0 0 10px;line-height:1.15}
+h2{font-size:clamp(24px,3.4vw,36px);margin:0 0 14px;line-height:1.2}
+p,li{font-size:clamp(15px,1.8vw,20px);line-height:1.5;margin:6px 0}
+.mut{color:var(--mut)}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin-top:14px}
+.c{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;flex:1;min-width:180px}
+.c b{display:block;margin-bottom:4px}
+.c.b{background:var(--blue2)}.c.g{background:var(--sage2)}.c.y{background:var(--sand2)}.c.r{background:var(--rose2)}
+.arr{align-self:center;font-size:26px;color:var(--mut)}
+.big{font-size:clamp(34px,6vw,60px);font-weight:700;color:var(--blue);line-height:1}
+.ag{counter-reset:a;list-style:none;padding:0}
+.ag li{counter-increment:a;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin:10px 0;font-size:clamp(17px,2.2vw,24px)}
+.ag li:before{content:counter(a);display:inline-block;width:34px;height:34px;line-height:34px;text-align:center;border-radius:50%;background:var(--blue2);color:var(--blue);margin-right:14px;font-weight:700}
+svg{width:100%;max-height:44vh;margin-top:8px}
+svg text{fill:var(--ink);font-family:inherit;font-size:14px}
+.bar{height:26px;border-radius:6px;background:var(--blue);margin:3px 0;color:#fff;font-size:14px;padding-left:8px;line-height:26px;white-space:nowrap}
+.f{font-family:Consolas,monospace;background:var(--sand2);border:1px solid var(--sand);border-radius:8px;padding:8px 14px;display:inline-block;font-size:clamp(14px,1.8vw,19px)}
+#nav{position:fixed;left:0;right:0;bottom:env(safe-area-inset-bottom,0px);height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;background:var(--card);border-top:1px solid var(--line);font-size:13px;color:var(--mut)}
+#nav button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:5px 14px;cursor:pointer;font-size:14px}
+#pb{position:fixed;top:0;left:0;height:3px;background:var(--blue);transition:width .3s;z-index:9}
+.k{flex:1 1 30%;min-width:200px}.k b{color:var(--blue)}</style></head><body>
+<div id="pb"></div>
+
+<section class="s on">
+<div class="tag">SIGMOD 2025 · Paper Presentation</div>
+<h1>Tribase: Faster Vector Search with Lossless Pruning</h1>
+<p class="mut">Using triangle inequalities to skip distance calculations without losing accuracy</p>
+<div class="row"><div class="c b"><b>Presented by</b>NIVED KRISHNA<br>Roll No: 26CS91R05</div>
+<div class="c"><b>Paper</b>Xu et al., “Tribase: A Vector Data Query Engine for Reliable and Lossless Pruning Compression using Triangle Inequalities”</div></div>
+</section>
+<section class="s"><div class="tag">Agenda</div><h2>What we will cover</h2>
+<ol class="ag"><li>The basics and the problem, block by block</li><li>How Tribase works, one part at a time</li><li>Results</li><li>Trade-offs</li><li>Takeaways</li></ol></section>
+<section class="s"><div class="tag">Before we start</div><h2>Words we will use</h2>
+<div class="row">
+<div class="c b k"><b>Vector</b>A list of numbers that describes an item (a photo, a sentence, a song).</div>
+<div class="c b k"><b>Query (Q)</b>What we search with, e.g. a photo we want similar photos for.</div>
+<div class="c b k"><b>Distance</b>How different two vectors are. Small distance = very similar.</div>
+<div class="c g k"><b>Top-K</b>The K best matches found so far (e.g. best 10).</div>
+<div class="c g k"><b>Bar to beat (TopK_W)</b>Distance of the <i>worst</i> of those K. A new item must be closer than this to get in.</div>
+<div class="c g k"><b>Recall</b>Share of the true best answers we found. 100% = perfect.</div>
+<div class="c y k"><b>Cluster &amp; center</b>A cluster is a group of similar vectors. Its center is the “average” point of the group.</div></div></section>
+<section class="s"><div class="tag">Problem · Block 1 of 4</div><h2>Vector search</h2>
+<p>Text, images and audio are turned into <b>vectors</b> (lists of numbers) so a computer can compare them. Similar items get similar numbers. When we search (the <b>query</b>, Q), we want the stored vectors <b>closest</b> to it.</p>
+<svg viewBox="0 0 800 190"><g>
+<rect x="10" y="20" width="110" height="38" rx="8" fill="#e6eef6" stroke="#7f9fbf"/><text x="40" y="45">Text</text>
+<rect x="10" y="76" width="110" height="38" rx="8" fill="#e6eef6" stroke="#7f9fbf"/><text x="38" y="101">Image</text>
+<rect x="10" y="132" width="110" height="38" rx="8" fill="#e6eef6" stroke="#7f9fbf"/><text x="38" y="157">Audio</text>
+<path d="M125 40L215 90M125 95L215 95M125 151L215 100" stroke="#7a8794"/>
+<rect x="215" y="65" width="150" height="60" rx="10" fill="#f5f0e4" stroke="#dccfb2"/><text x="232" y="92">Embedding model</text><text x="240" y="110">(e.g. 128 dims)</text>
+<path d="M370 95H430" stroke="#7a8794" marker-end="url(#a)"/>
+<rect x="435" y="65" width="170" height="60" rx="10" fill="#fff" stroke="#dfe5ea"/><text x="450" y="92">[0.12, 0.83, -0.4,</text><text x="450" y="110">  0.07, … ]</text>
+<path d="M610 95H655" stroke="#7a8794"/>
+<rect x="660" y="65" width="130" height="60" rx="10" fill="#e8f1ec" stroke="#9bb8a5"/><text x="672" y="92">Top-K nearest</text><text x="672" y="110">to the query</text></g>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0L6 3L0 6" fill="#7a8794"/></marker></defs></svg>
+<p class="mut">Scale: millions to billions of vectors, hundreds of dimensions, answers needed in milliseconds.</p></section>
+<section class="s"><div class="tag">Problem · Block 2 of 4 (a)</div><h2>Cluster-based index: the idea</h2>
+<p>Think of a library. Instead of checking every book, books are grouped on shelves by topic.</p>
+<svg viewBox="0 0 800 210">
+<rect x="20" y="60" width="200" height="110" rx="10" fill="#f6eaea" stroke="#d3a5a5"/><text x="90" y="85">Cooking</text>
+<rect x="300" y="60" width="200" height="110" rx="10" fill="#e8f1ec" stroke="#9bb8a5" stroke-width="3"/><text x="372" y="85">Space</text>
+<rect x="580" y="60" width="200" height="110" rx="10" fill="#f5f0e4" stroke="#dccfb2"/><text x="650" y="85">Sports</text>
+<g fill="#c9d3dc"><rect x="40" y="110" width="18" height="46"/><rect x="64" y="110" width="18" height="46"/><rect x="88" y="110" width="18" height="46"/><rect x="320" y="110" width="18" height="46"/><rect x="344" y="110" width="18" height="46"/><rect x="368" y="110" width="18" height="46"/><rect x="600" y="110" width="18" height="46"/><rect x="624" y="110" width="18" height="46"/></g>
+<rect x="290" y="5" width="220" height="34" rx="17" fill="#e6eef6" stroke="#7f9fbf"/><text x="312" y="27">Query: “a rocket book”</text><path d="M400 40V58" stroke="#7a8794" stroke-width="2"/></svg>
+<p>Shelf = <b>cluster</b>. We only walk to the nearest shelf(s), so most books are never touched.</p></section>
+<section class="s"><div class="tag">Problem · Block 2 of 4 (b)</div><h2>How it works, step by step</h2>
+<svg viewBox="0 0 800 200">
+<ellipse cx="150" cy="100" rx="120" ry="80" fill="#e6eef6" stroke="#7f9fbf" stroke-dasharray="6"/><ellipse cx="500" cy="65" rx="110" ry="55" fill="#f5f0e4" stroke="#dccfb2" stroke-dasharray="6"/><ellipse cx="640" cy="160" rx="100" ry="38" fill="#f6eaea" stroke="#d3a5a5" stroke-dasharray="6"/>
+<g fill="#7f9fbf"><circle cx="100" cy="80" r="6"/><circle cx="180" cy="70" r="6"/><circle cx="200" cy="130" r="6"/><circle cx="110" cy="140" r="6"/></g><g fill="#c4b48e"><circle cx="450" cy="45" r="6"/><circle cx="540" cy="40" r="6"/><circle cx="520" cy="85" r="6"/></g><g fill="#d3a5a5"><circle cx="600" cy="160" r="6"/><circle cx="680" cy="150" r="6"/></g>
+<g fill="#37475a"><circle cx="150" cy="100" r="9"/><circle cx="490" cy="62" r="9"/><circle cx="640" cy="160" r="9"/></g>
+<text x="276" y="110" font-size="28" fill="#9bb8a5">★</text><text x="270" y="135">Q (query)</text><text x="130" y="195">center</text><text x="60" y="30">Cluster A</text></svg>
+<div class="row"><div class="c b"><b>1 · Build (once)</b>Group similar vectors; each group gets a center.</div><div class="c g"><b>2 · Pick clusters</b>Compare Q with the few centers only. Keep the <b>nprobe</b> nearest clusters.</div><div class="c y"><b>3 · Search inside</b>Measure Q against every vector in those clusters. Keep the best K.</div></div></section>
+<section class="s"><div class="tag">Problem · Block 3 of 4</div><h2>Where does the time go?</h2>
+<div style="max-width:700px">
+<p>Measuring the distance from Q to one vector means working through all its numbers (say 128). Doing that for millions of vectors is slow.</p><p style="margin-bottom:2px">Share of query time at 99% recall</p>
+<div class="bar" style="width:98%">Computing vector distances ≈ 98–99%</div>
+<div class="bar" style="width:3%;background:var(--sage)"></div><span class="mut">Everything else ≈ 1–2%</span></div>
+<div class="row"><div class="c y"><b>Too coarse</b>Every vector in a selected cluster is treated the same, near the query or far from it.</div>
+<div class="c y"><b>Static</b>As better results are found, the bar to enter the top-K rises, but nothing exploits that.</div></div></section>
+<section class="s"><div class="tag">Problem · Block 4 of 4</div><h2>The challenge</h2>
+<p><b>Can we skip distance calculations without losing accuracy?</b></p>
+<p>Idea: a simple rule from geometry, the <b>triangle inequality</b> (next slide), lets us estimate a distance without measuring it.</p>
+<div class="row"><div class="c r"><b>Curse of dimensionality</b>Points sit on a thin shell, and random vectors are nearly perpendicular, so bounds are loose.</div>
+<div class="c r"><b>Overhead</b>Extra computation at query time can cost more than the pruning saves.</div></div>
+<p class="mut">Tribase answers both: precompute offline, prune with distance and angle online.</p></section>
+<section class="s"><div class="tag">The key trick</div><h2>Triangle inequality, in plain words</h2>
+<svg viewBox="0 0 800 210"><circle cx="80" cy="170" r="9" fill="#37475a"/><circle cx="330" cy="50" r="9" fill="#7f9fbf"/><circle cx="640" cy="170" r="9" fill="#9bb8a5"/>
+<path d="M80 170L330 50M330 50L640 170" stroke="#7f9fbf" stroke-width="2"/><path d="M80 170H640" stroke="#9bb8a5" stroke-width="3"/>
+<text x="40" y="198">Home</text><text x="300" y="38">Shop</text><text x="610" y="198">School</text><text x="170" y="95">5 km</text><text x="500" y="95">1 km</text><text x="320" y="160">Home → School = ?</text></svg>
+<p>Going straight is never longer than a detour. Home→Shop is 5 km and Shop→School is 1 km, so Home→School must be between <b>4 and 6 km</b>, without walking it.</p>
+<div class="row"><div class="c b"><b>Home</b> = the query Q</div><div class="c y"><b>Shop</b> = a known landmark (e.g. a cluster center)</div><div class="c g"><b>School</b> = an item we hope to skip</div></div>
+<p>If even the <i>smallest possible</i> distance is above the bar to beat, the item cannot make the top-K. Skip it, safely.</p></section>
+<section class="s"><div class="tag">How Tribase works · Overview</div><h2>Work offline, prune online</h2>
+<div class="row">
+<div class="c b"><b>Offline: training</b>Cluster the data, then store extra “landmark” fields per vector.</div><div class="arr">→</div>
+<div class="c g"><b>Online: query</b>Pick nprobe clusters, then run three pruning checks before computing any distance.</div><div class="arr">→</div>
+<div class="c y"><b>Result</b>Same top-K, far fewer distance computations.</div></div>
+<div class="row"><div class="c">1 · Training</div><div class="c">2 · Center-distance pruning</div><div class="c">3 · subNN distance pruning</div><div class="c">4 · subNN angle pruning</div></div></section>
+<section class="s"><div class="tag">How Tribase works · Part 1 of 4</div><h2>Training: save landmarks</h2>
+<p>Done once, before any query. For each item <b>P</b> in a cluster we save:</p>
+<svg viewBox="0 0 800 210"><ellipse cx="190" cy="105" rx="165" ry="95" fill="#e6eef6" stroke="#7f9fbf" stroke-dasharray="6"/>
+<path d="M190 105L280 60" stroke="#7a8794"/><path d="M280 60L330 120" stroke="#9bb8a5" stroke-width="2"/>
+<circle cx="190" cy="105" r="9" fill="#37475a"/><circle cx="280" cy="60" r="7" fill="#7f9fbf"/><circle cx="330" cy="120" r="7" fill="#7f9fbf"/><circle cx="100" cy="150" r="7" fill="#7f9fbf"/><circle cx="150" cy="50" r="7" fill="#7f9fbf"/>
+<text x="170" y="135">center</text><text x="285" y="52">P</text><text x="335" y="140">P's neighbor</text>
+<rect x="430" y="15" width="350" height="48" rx="8" fill="#f5f0e4" stroke="#dccfb2"/><text x="445" y="45">1. Distance from P to its center</text>
+<rect x="430" y="75" width="350" height="48" rx="8" fill="#e8f1ec" stroke="#9bb8a5"/><text x="445" y="105">2. Its closest neighbors + distances</text>
+<rect x="430" y="135" width="350" height="48" rx="8" fill="#e6eef6" stroke="#7f9fbf"/><text x="445" y="165">3. Its neighbors by direction (angle)</text></svg>
+<p class="mut">Saving these now means no extra work at query time. Cost: more build time and a little memory.</p></section>
+<section class="s"><div class="tag">How Tribase works · Part 2 of 4</div><h2>Center-distance pruning</h2>
+<svg viewBox="0 0 800 210"><circle cx="110" cy="140" r="55" fill="#f6eaea" stroke="#d3a5a5"/><text x="60" y="205">bar to beat = 5</text><text x="98" y="148" font-size="22">★</text><text x="95" y="128">Q</text>
+<circle cx="560" cy="110" r="70" fill="#e6eef6" stroke="#7f9fbf" stroke-dasharray="6"/>
+<path d="M115 140L560 110" stroke="#37475a" stroke-width="2"/><text x="300" y="138">Q to center = 10</text>
+<path d="M560 110L520 60" stroke="#9bb8a5" stroke-width="2"/><text x="545" y="90">P to center = 3</text>
+<path d="M115 140L520 60" stroke="#d3a5a5" stroke-dasharray="6"/><text x="270" y="85">Q to P = ?</text>
+<circle cx="560" cy="110" r="8" fill="#37475a"/><circle cx="520" cy="60" r="7" fill="#7f9fbf"/><text x="500" y="52">P</text><text x="575" y="130">center</text></svg>
+<p><b>Known:</b> Q to center (already measured to pick clusters) and P to center (saved in training). <b>Unknown:</b> Q to P.</p>
+<div class="f">Q to P ≥ 10 − 3 = 7, which is more than 5. Skip P!</div>
+<p class="mut">Rule: Q-to-center minus P-to-center &gt; bar to beat ⇒ skip. Very cheap to check.</p></section>
+<section class="s"><div class="tag">How Tribase works · Part 3 of 4</div><h2>subNN distance pruning</h2>
+<svg viewBox="0 0 800 200"><circle cx="100" cy="120" r="50" fill="#f6eaea" stroke="#d3a5a5"/><text x="88" y="128" font-size="22">★</text><text x="86" y="108">Q</text><text x="50" y="190">bar to beat = 5</text>
+<path d="M100 120L440 80" stroke="#37475a" stroke-width="2"/><text x="190" y="85">A is far: Q to A = 12 (measured)</text>
+<circle cx="440" cy="80" r="8" fill="#37475a"/><text x="430" y="65">A</text>
+<path d="M440 80L560 80" stroke="#9bb8a5" stroke-width="3"/><text x="470" y="105">A to B = 2 (saved)</text><circle cx="560" cy="80" r="7" fill="#7f9fbf"/><text x="555" y="65">B</text></svg>
+<p>“subNN” = each item’s saved nearest neighbors. A is already measured and is far from Q. B is one of A’s neighbors.</p>
+<div class="f">Q to B ≥ 12 − 2 = 10, more than 5. Skip B!</div>
+<p class="mut">Intuition: if A is far away and B sits right next to A, B is far too. Catches items the center rule misses.</p></section>
+<section class="s"><div class="tag">How Tribase works · Part 4 of 4</div><h2>subNN angle pruning</h2>
+<p>Distance is not the only clue. <b>Direction</b> also works.</p>
+<svg viewBox="0 0 800 200"><polygon points="150,100 700,35 700,165" fill="#e6eef6" stroke="#7f9fbf" stroke-dasharray="6"/>
+<circle cx="150" cy="100" r="9" fill="#37475a"/><text x="130" y="125">center</text><text x="690" y="108" font-size="26" fill="#9bb8a5">★</text><text x="650" y="130">Q</text>
+<g fill="#7f9fbf"><circle cx="400" cy="95" r="6"/><circle cx="480" cy="115" r="6"/></g><g fill="#d3a5a5"><circle cx="250" cy="20" r="6"/><circle cx="240" cy="180" r="6"/><circle cx="60" cy="70" r="6"/><circle cx="70" cy="150" r="6"/></g>
+<text x="360" y="75">inside cone: could be close → check</text><text x="235" y="12">outside: skip</text></svg>
+<p>From the center, only items pointing toward Q (inside the cone) can be close to Q. Items pointing elsewhere are skipped.</p>
+<p>We measure each item as a <b>direction from its center</b>, so items spread out instead of all looking alike. Angles also obey a triangle rule, which keeps this safe.</p>
+<p class="mut">Works well in high dimensions but needs a few extra multiplications.</p></section>
+<section class="s"><div class="tag">Results · 1 of 2</div><h2>Speedup and pruning</h2>
+<div class="row">
+<div class="c b"><div class="big">10×</div>max speedup over Faiss</div>
+<div class="c g"><div class="big" style="color:var(--sage)">3.11×</div>average speedup at recall = 1</div>
+<div class="c y"><div class="big" style="color:#b9a56f">99.4%</div>distance computations pruned</div></div>
+<p>Baseline: Faiss, a popular open-source vector search library. Tested on 10 datasets (Fashion, Sift1M, Msong, Deep1B and more). Gains grow as the recall target rises, since later clusters are easier to prune.</p>
+<p class="mut">Pruning at recall = 1 is lossless: same results as Faiss.</p></section>
+<section class="s"><div class="tag">Results · 2 of 2</div><h2>Which module helps?</h2>
+<p style="margin-bottom:2px">Lossless pruning ratio on Msong</p>
+<div style="max-width:640px">
+<div class="bar" style="width:63%">Center distance 63%</div>
+<div class="bar" style="width:41%;background:var(--sage)">subNN distance 41%</div>
+<div class="bar" style="width:41%;background:var(--sand);color:var(--ink)">subNN angle 41%</div>
+<div class="bar" style="width:76%;background:#5f7f9f">All combined 76%</div></div>
+<div class="row"><div class="c"><b>vs ADSampling</b> (another speed-up method)<br>Both beat Faiss without SIMD. With SIMD (hardware doing many calculations at once), Tribase stays ≈ 2× vs 1.3×.</div>
+<div class="c"><b>vs VAQ</b> (older triangle-based method)<br>41% more pruning, 36% more speed.</div>
+<div class="c"><b>TriHNSW</b>~25% faster than HNSW at recall 0.95.</div></div></section>
+<section class="s"><div class="tag">Trade-offs</div><h2>What it costs</h2>
+<div class="row">
+<div class="c r"><b>Indexing time</b>Triangle only ≈ same as Faiss. All modules: Msong 13.6 → 101 s.</div>
+<div class="c r"><b>Memory</b>Peak ≈ 1.3× Faiss (subNN L2), ≈ 1.76× (angle / all).</div>
+<div class="c r"><b>Low dimensions</b>Fixed overhead hurts. Gains are larger in high dimensions.</div></div>
+<div class="row"><div class="c g"><b>Knobs</b>Settings such as neighbors saved per item trade build time for index quality, with little effect on query speed.</div>
+<div class="c g"><b>Pruning intensity</b>Below 1.0 prunes more aggressively: faster, but may miss a few answers (e.g. 0.8).</div></div></section>
+<section class="s"><div class="tag">Takeaways</div><h2>Three things to remember</h2>
+<ol class="ag"><li>Distance computation dominates cluster-based search, so pruning it pays off.</li><li>Triangle inequalities on distance and angle prune safely, and precomputing offline keeps query overhead low.</li><li>Up to 10× faster than Faiss with lossless results, in exchange for more build time and memory.</li></ol></section>
+<section class="s" style="text-align:center;align-items:center"><h1>Thank you</h1><h2 class="mut">Questions?</h2><p>NIVED KRISHNA · 26CS91R05</p></section>
+
+<div id="nav"><span>NIVED KRISHNA · 26CS91R05</span><span><button id="p">←</button> <span id="n"></span> <button id="x">→</button></span></div>
+<script>
+var S=document.querySelectorAll('.s'),i=0;
+function go(k){i=Math.max(0,Math.min(S.length-1,k));S.forEach(function(e,j){e.classList.toggle('on',j==i)});
+document.getElementById('n').textContent=(i+1)+' / '+S.length;document.getElementById('pb').style.width=((i+1)/S.length*100)+'%';location.hash=i+1}
+document.getElementById('p').onclick=function(){go(i-1)};document.getElementById('x').onclick=function(){go(i+1)};
+document.onkeydown=function(e){if(e.key=='ArrowRight'||e.key==' '||e.key=='PageDown')go(i+1);if(e.key=='ArrowLeft'||e.key=='PageUp')go(i-1)};
+var t=0;document.ontouchstart=function(e){t=e.touches[0].clientX};document.ontouchend=function(e){var d=e.changedTouches[0].clientX-t;if(Math.abs(d)>60)go(i+(d<0?1:-1))};
+go((parseInt(location.hash.slice(1))||1)-1);
+</script></body></html>
